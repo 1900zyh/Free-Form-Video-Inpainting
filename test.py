@@ -9,6 +9,7 @@ import torch.nn.init as init
 import torch.utils.model_zoo as model_zoo
 from torchvision import models
 import torch.multiprocessing as mp
+from torchvision import transforms
 
 import cv2
 import matplotlib.pyplot as plt
@@ -23,10 +24,12 @@ import copy
 import datetime
 import random
 import sys
+import json
 
 ### My libs
-from models.dataset import dataset
-from models.CPNet_model import CPNet
+from core.video_inpainting_model import VideoInpaintingModel
+from core.transform import Stack, ToTorchFormatTensor
+from core.util import set_device, postprocess, ZipReader, set_seed
  
 
 parser = argparse.ArgumentParser(description="CPNet")
@@ -42,17 +45,13 @@ DATA_NAME = args.n
 MASK_TYPE = args.m
 
 w,h = 424, 240
+sample_length = 15
 default_fps = 6
+ngpus = torch.cuda.device_count()
+_to_tensors = transforms.Compose([
+  Stack(),
+  ToTorchFormatTensor()])
 
-
-# set parameter to gpu or cpu
-def set_device(args):
-  if torch.cuda.is_available():
-    if isinstance(args, list):
-      return (item.cuda() for item in args)
-    else:
-      return args.cuda()
-  return args
 
 def get_clear_state_dict(old_state_dict):
   from collections import OrderedDict
@@ -65,128 +64,98 @@ def get_clear_state_dict(old_state_dict):
   return new_state_dict
 
 
+def get_mask(vname, mname):
+  if MASK_TYPE == 'fixed':
+    m = np.zeros((h,w), np.uint8)
+    m[h//2-h//8:h//2+h//8, w//2-w//8:w//2+w//8] = 255
+    return Image.fromarray(m)
+  elif MASK_TYPE == 'object':
+    m = ZipReader.imread('../datazip/{}/Annotations/{}.zip'.format(DATA_NAME, vname), mname).convert('L')
+    m = np.array(m)
+    m = np.array(m>0).astype(np.uint8)*255
+    m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_CROSS,(3,3)), iterations=4)
+    return Image.fromarray(m)
+  else:
+    raise NotImplementedError(f"Mask type {MASK_TYPE} not exists")
+
+
+
 def main_worker(gpu, ngpus_per_node, args):
   if ngpus_per_node > 0:
     torch.cuda.set_device(int(gpu))
   # set random seed 
-  seed = 2020
-  torch.manual_seed(seed)
-  torch.cuda.manual_seed_all(seed)
-  np.random.seed(seed)
-  random.seed(seed)
-  torch.backends.cudnn.deterministic = True
-  torch.backends.cudnn.benchmark = True
+  set_seed(2020)
 
   # Model and version
-  model = set_device(CPNet())
-  data = torch.load('./weight/weight.pth', map_location = lambda storage, loc: set_device(storage))
-  data = get_clear_state_dict(data)
-  model.load_state_dict(data)
-  model.eval() # turn-off BN
+  config = torch.load(args.resume)['config']
+  model = VideoInpaintingModel(config)
+  model.load_state_dict(config['state_dict'])
+  model = set_device(model)
+  model.eval() 
 
-  Pset = dataset(DATA_NAME, MASK_TYPE)
-  step = math.ceil(len(Pset) / ngpus_per_node)
-  Pset = torch.utils.data.Subset(Pset, range(gpu*step, min(gpu*step+step, len(Pset))))
-  Trainloader = torch.utils.data.DataLoader(Pset, batch_size=1, shuffle=False, num_workers=0, drop_last=True)
-
-  num_length = 120 # 2*num_length is the number of reference frames
+  # prepare dataset
   save_path = 'results/{}_{}'.format(DATA_NAME, MASK_TYPE)
-  for vi, V in enumerate(Trainloader):
-    frames, masks, GTs, info = V # b,3,t,h,w / b,1,t,h,w
-    frames, masks, GTs = set_device([frames, masks, GTs])
-    seq_name = info['name'][0]
-    num_frames = frames.size()[2]
-    print('[{}] {}/{}: {} for {} frames ...'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-      vi, len(Trainloader), seq_name, frames.size()[2]))
-
-    with torch.no_grad():
-      rfeats = model(frames, masks)
-    frames_ = frames.clone()
-    masks_ = masks.clone() 
-    index = [f for f in reversed(range(num_frames))]
-    comp_frames = []
-    pred_frames = []
-    mask_frames = []
-    orig_frames = []
-        
-    for t in range(2): # forward : 0, backward : 1
-      if t == 1:
-        comp0 = frames.clone()
-        frames = frames_
-        masks = masks_
-        index.reverse()
-
-      for f in index:
-        ridx = []
-        start = f - num_length
-        end = f + num_length
-        if f - num_length < 0:
-          end = (f + num_length) - (f - num_length)
-          if end > num_frames:
-            end = num_frames -1
-          start = 0
-        elif f + num_length > num_frames:
-          start = (f - num_length) - (f + num_length - num_frames)
-          if start < 0:
-            start = 0
-          end = num_frames -1
-            
-        # interval: 2
-        for i in range(start, end, 2):
-          if i != f:
-            ridx.append(i)
-        
-        with torch.no_grad():
-          comp, pred, masked, orig = model(rfeats[:,:,ridx], frames[:,:,ridx], masks[:,:,ridx], frames[:,:,f], masks[:,:,f], GTs[:,:,f])
-          c_s = comp.shape
-          Fs = torch.empty((c_s[0], c_s[1], 1, c_s[2], c_s[3])).float().cuda()
-          Hs = torch.zeros((c_s[0], 1, 1, c_s[2], c_s[3])).float().cuda()
-          Fs[:,:,0] = comp.detach()
-          frames[:,:,f] = Fs[:,:,0]
-          masks[:,:,f] = Hs[:,:,0]                
-          rfeats[:,:,f] = model(Fs, Hs)[:,:,0]
-
-        if t == 1:
-          est = comp0[:,:,f] * (len(index)-f) / len(index) + comp.detach() * f / len(index)
-          comp = (est[0].cpu().permute(1,2,0).numpy() * 255.).astype(np.uint8)
-          pred = (pred[0].cpu().permute(1,2,0).numpy() * 255.).astype(np.uint8)
-          masked = (masked[0].cpu().permute(1,2,0).numpy() * 255.).astype(np.uint8)
-          orig = (orig[0].cpu().permute(1,2,0).numpy() * 255.).astype(np.uint8)
-          if comp.shape[1] % 2 != 0:
-            comp = np.pad(comp, [[0,0],[0,1],[0,0]], mode='constant')
-            pred = np.pad(pred, [[0,0],[0,1],[0,0]], mode='constant')
-            masked = np.pad(masked, [[0,0],[0,1],[0,0]], mode='constant')
-            orig = np.pad(orig, [[0,0],[0,1],[0,0]], mode='constant')
-          comp_frames.append(cv2.cvtColor(comp, cv2.COLOR_BGR2RGB))
-          pred_frames.append(cv2.cvtColor(pred, cv2.COLOR_BGR2RGB))
-          mask_frames.append(cv2.cvtColor(masked, cv2.COLOR_BGR2RGB))
-          orig_frames.append(cv2.cvtColor(orig, cv2.COLOR_BGR2RGB))
-
-    os.makedirs(os.path.join(save_path, seq_name), exist_ok=True)
-    comp_writer = cv2.VideoWriter(os.path.join(save_path, seq_name, 'comp.avi'),
-      cv2.VideoWriter_fourcc(*"MJPG"), default_fps, (w, h))
-    pred_writer = cv2.VideoWriter(os.path.join(save_path, seq_name, 'pred.avi'),
-      cv2.VideoWriter_fourcc(*"MJPG"), default_fps, (w, h))
-    mask_writer = cv2.VideoWriter(os.path.join(save_path, seq_name, 'mask.avi'),
-      cv2.VideoWriter_fourcc(*"MJPG"), default_fps, (w, h))
-    orig_writer = cv2.VideoWriter(os.path.join(save_path, seq_name, 'orig.avi'),
-      cv2.VideoWriter_fourcc(*"MJPG"), default_fps, (w, h))
-    for f in range(len(comp_frames)):
-      comp_writer.write(comp_frames[f])
-      pred_writer.write(pred_frames[f])
-      mask_writer.write(mask_frames[f])
-      orig_writer.write(orig_frames[f])
-    comp_writer.release()
-    pred_writer.release()
-    mask_writer.release()
-    orig_writer.release()
+  with open('../flist/{}/test.json'.format(DATA_NAME), 'r') as f:
+    videos_dict = json.load(f)
+  video_names = list(videos_dict.keys())
+  with open('../flist/{}/mask.json'.format(DATA_NAME), 'r') as f:
+    masks_dict = json.load(f)
+  mask_names = list(masks_dict.keys())
+  step = math.ceil(len(video_names) / ngpus_per_node)
+  video_names = video_names[gpu*step: min(gpu*step+step, len(video_names))]
+  mask_names = mask_names[gpu*step: min(gpu*step+step, len(mask_names))]
+  # iteration through datasets
+  for vi, vname in enumerate(video_names):
+    index = 0
+    fnames = videos_dict[vname]
+    mnames = masks_dict[vname]
+    orig_video = []
+    mask_video = []
+    comp_video = []
+    pred_video = []
+    os.makedirs(os.path.join(save_path, vname), exist_ok=True)
+    print('{}/{} to {} : {} of {} frames ...'.format(vi, len(video_names), save_path, vname, len(fnames)))
+    while index < len(fnames):
+      # preprocess data
+      frames = []
+      for f, fname in fnames[index:min(len(fnames), index+sample_length)]:
+        img = ZipReader.imread('../datazip/{}/JPEGImages/{}.zip'.format(DATA_NAME, vname), fname)
+        img = cv2.resize(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR), (w,h), cv2.INTER_CUBIC)
+        frames.append(Image.fromarray(img))
+        masks.append(get_mask(vname, mnames[f]))
+      if len(frames) < sample_length:
+        frames += [frames[-1]] * (sample_length-len(frames))
+        masks += [masks[-1]] * (sample_length-len(masks))
+      # inference
+      frames = _to_tensors(frames).unsqueeze(0)
+      masks =  _to_tensors(masks).unsqueeze(0)
+      frames, masks = set_device([frames, masks])
+      with torch.no_grad():
+        pred_img = model(frames, masks, model='G')
+      # postprocess
+      complete_img = (pred_img * masks) + (frames * (1. - masks))
+      masked_img = frames * (1. - masks) + masks
+      orig_video.extend(postprocess(frames[0]))
+      comp_video.extend(postprocess(complete_img[0]))
+      pred_video.extend(postprocess(pred_img[0]))
+      mask_video.extend(postprocess(masked_img[0]))
+      # next clip
+      index += sample_length
+    # save all frames into a video
+    writers = {tname: (cv2.VideoWriter(os.path.join(save_path, vname, '{}.avi'.format(tname)),
+                          cv2.VideoWriter_fourcc(*"MJPG"), default_fps, (w, h)), frames_to_save)
+              for tname,frames_to_save in zip(['orig', 'pred', 'mask', 'comp'], [orig_video, pred_video, mask_video, comp_video])}
+    for wtype, (writer, imgs) in writers.items():
+      for i in range(len(fnames)):
+        writer.write(cv2.cvtColor(np.array(imgs[i]), cv2.COLOR_RGB2BGR))
+      writer.release()
 
   print('Finish in {}'.format(save_path))
 
 
 
 if __name__ == '__main__':
-  config = json.load(open('configs/config.json'))
+  args.resume = 'weights/release.pth'
   ngpus_per_node = torch.cuda.device_count()
   print('using {} GPUs for testing ... '.format(ngpus_per_node))
   if ngpus_per_node > 0:
