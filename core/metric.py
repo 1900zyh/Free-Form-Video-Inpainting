@@ -11,8 +11,8 @@ import torch
 from torchvision import transforms
 from torchvision.transforms import ToPILImage
 
-from utils.i3d import InceptionI3d
-from utils.transform import Stack, ToTorchFormatTensor
+from core.i3d import InceptionI3d
+from core.transform import Stack, ToTorchFormatTensor
 
 
 def ssim(frames1, frames2):
