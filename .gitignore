@@ -1,4 +1,7 @@
 # Ignore ipython notebook files because it has large amount of output
 *.ipynb
+*.log
 *.pth
+*.jpg
+*.avi
 __pycache__

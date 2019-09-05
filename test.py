@@ -45,7 +45,7 @@ DATA_NAME = args.n
 MASK_TYPE = args.m
 
 w,h = 424, 240
-sample_length = 15
+sample_length = 7
 default_fps = 6
 ngpus = torch.cuda.device_count()
 _to_tensors = transforms.Compose([
@@ -60,16 +60,17 @@ def get_clear_state_dict(old_state_dict):
     name = k 
     if k.startswith('module.'):
       name = k[7:]
-    new_state_dict[name] = v
+    new_state_dict[name] = set_device(v)
   return new_state_dict
 
 
-def get_mask(vname, mname):
+def get_mask(vname, mask_dict, f):
   if MASK_TYPE == 'fixed':
     m = np.zeros((h,w), np.uint8)
     m[h//2-h//8:h//2+h//8, w//2-w//8:w//2+w//8] = 255
     return Image.fromarray(m)
   elif MASK_TYPE == 'object':
+    mname = mask_dict[f]
     m = ZipReader.imread('../datazip/{}/Annotations/{}.zip'.format(DATA_NAME, vname), mname).convert('L')
     m = np.array(m)
     m = np.array(m>0).astype(np.uint8)*255
@@ -88,9 +89,11 @@ def main_worker(gpu, ngpus_per_node, args):
 
   # Model and version
   config = torch.load(args.resume)['config']
-  model = VideoInpaintingModel(config)
-  model.load_state_dict(config['state_dict'])
+  model = VideoInpaintingModel(**config['arch']['args'])
   model = set_device(model)
+  state_dict = torch.load(args.resume)['state_dict']
+  state_dict = get_clear_state_dict(state_dict)
+  model.load_state_dict(state_dict)
   model.eval() 
 
   # prepare dataset
@@ -108,7 +111,6 @@ def main_worker(gpu, ngpus_per_node, args):
   for vi, vname in enumerate(video_names):
     index = 0
     fnames = videos_dict[vname]
-    mnames = masks_dict[vname]
     orig_video = []
     mask_video = []
     comp_video = []
@@ -118,11 +120,12 @@ def main_worker(gpu, ngpus_per_node, args):
     while index < len(fnames):
       # preprocess data
       frames = []
-      for f, fname in fnames[index:min(len(fnames), index+sample_length)]:
+      masks = []
+      for f, fname in enumerate(fnames[index:min(len(fnames), index+sample_length)]):
         img = ZipReader.imread('../datazip/{}/JPEGImages/{}.zip'.format(DATA_NAME, vname), fname)
         img = cv2.resize(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR), (w,h), cv2.INTER_CUBIC)
         frames.append(Image.fromarray(img))
-        masks.append(get_mask(vname, mnames[f]))
+        masks.append(get_mask(vname, masks_dict, f))
       if len(frames) < sample_length:
         frames += [frames[-1]] * (sample_length-len(frames))
         masks += [masks[-1]] * (sample_length-len(masks))
@@ -131,7 +134,7 @@ def main_worker(gpu, ngpus_per_node, args):
       masks =  _to_tensors(masks).unsqueeze(0)
       frames, masks = set_device([frames, masks])
       with torch.no_grad():
-        pred_img = model(frames, masks, model='G')
+        pred_img = model(frames, masks, model='G')['outputs']
       # postprocess
       complete_img = (pred_img * masks) + (frames * (1. - masks))
       masked_img = frames * (1. - masks) + masks

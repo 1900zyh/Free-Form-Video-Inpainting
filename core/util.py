@@ -10,7 +10,6 @@ import zipfile
 from glob import glob
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
-from utils.mask_generator import get_video_masks_by_moving_random_stroke
 
 import torch
 import torchvision
