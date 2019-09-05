@@ -89,9 +89,7 @@ def set_device(args):
       return args.cuda()
   return args
 
-def postprocess(img, data_range=2):
-  if data_range == 2:
-    img = (img + 1.) / 2.
+def postprocess(img):
   img = img * 255.0
   img = img.permute(0, 2, 3, 1)
   img = img.int().cpu().numpy().astype(np.uint8)

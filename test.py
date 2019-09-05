@@ -70,12 +70,13 @@ def get_mask(vname, mask_dict, f):
     m[h//2-h//8:h//2+h//8, w//2-w//8:w//2+w//8] = 255
     return Image.fromarray(m)
   elif MASK_TYPE == 'object':
-    mname = mask_dict[f]
+    mname = mask_dict[vname][f]
     m = ZipReader.imread('../datazip/{}/Annotations/{}.zip'.format(DATA_NAME, vname), mname).convert('L')
     m = np.array(m)
-    m = np.array(m>0).astype(np.uint8)*255
+    m = np.array(m>0).astype(np.uint8)
+    m = cv2.resize(m, (w,h), cv2.INTER_NEAREST)
     m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_CROSS,(3,3)), iterations=4)
-    return Image.fromarray(m)
+    return Image.fromarray(m*255)
   else:
     raise NotImplementedError(f"Mask type {MASK_TYPE} not exists")
 
@@ -91,8 +92,8 @@ def main_worker(gpu, ngpus_per_node, args):
   config = torch.load(args.resume)['config']
   model = VideoInpaintingModel(**config['arch']['args'])
   model = set_device(model)
-  state_dict = torch.load(args.resume)['state_dict']
-  state_dict = get_clear_state_dict(state_dict)
+  state_dict = torch.load(args.resume, map_location=lambda storage, loc: set_device(storage))['state_dict']
+  #state_dict = get_clear_state_dict(state_dict)
   model.load_state_dict(state_dict)
   model.eval() 
 
@@ -115,7 +116,6 @@ def main_worker(gpu, ngpus_per_node, args):
     mask_video = []
     comp_video = []
     pred_video = []
-    os.makedirs(os.path.join(save_path, vname), exist_ok=True)
     print('{}/{} to {} : {} of {} frames ...'.format(vi, len(video_names), save_path, vname, len(fnames)))
     while index < len(fnames):
       # preprocess data
@@ -123,9 +123,9 @@ def main_worker(gpu, ngpus_per_node, args):
       masks = []
       for f, fname in enumerate(fnames[index:min(len(fnames), index+sample_length)]):
         img = ZipReader.imread('../datazip/{}/JPEGImages/{}.zip'.format(DATA_NAME, vname), fname)
-        img = cv2.resize(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR), (w,h), cv2.INTER_CUBIC)
+        img = cv2.resize(np.array(img), (w,h), cv2.INTER_CUBIC)
         frames.append(Image.fromarray(img))
-        masks.append(get_mask(vname, masks_dict, f))
+        masks.append(get_mask(vname, masks_dict, index+f))
       if len(frames) < sample_length:
         frames += [frames[-1]] * (sample_length-len(frames))
         masks += [masks[-1]] * (sample_length-len(masks))
@@ -134,7 +134,8 @@ def main_worker(gpu, ngpus_per_node, args):
       masks =  _to_tensors(masks).unsqueeze(0)
       frames, masks = set_device([frames, masks])
       with torch.no_grad():
-        pred_img = model(frames, masks, model='G')['outputs']
+        pred_img = model(frames*(1.-masks), 1.-masks, model='G')['outputs']
+        pred_img = torch.clamp(pred_img, 0, 1)
       # postprocess
       complete_img = (pred_img * masks) + (frames * (1. - masks))
       masked_img = frames * (1. - masks) + masks
@@ -145,6 +146,7 @@ def main_worker(gpu, ngpus_per_node, args):
       # next clip
       index += sample_length
     # save all frames into a video
+    os.makedirs(os.path.join(save_path, vname), exist_ok=True)
     writers = {tname: (cv2.VideoWriter(os.path.join(save_path, vname, '{}.avi'.format(tname)),
                           cv2.VideoWriter_fourcc(*"MJPG"), default_fps, (w, h)), frames_to_save)
               for tname,frames_to_save in zip(['orig', 'pred', 'mask', 'comp'], [orig_video, pred_video, mask_video, comp_video])}
