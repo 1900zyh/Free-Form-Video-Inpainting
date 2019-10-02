@@ -30,6 +30,7 @@ import json
 from core.video_inpainting_model import VideoInpaintingModel
 from core.transform import Stack, ToTorchFormatTensor
 from core.util import set_device, postprocess, ZipReader, set_seed
+from core.util import get_video_masks_by_moving_random_stroke
  
 
 parser = argparse.ArgumentParser(description="CPNet")
@@ -121,11 +122,14 @@ def main_worker(gpu, ngpus_per_node, args):
       # preprocess data
       frames = []
       masks = []
+      if MASK_TYPE == 'random_obj':
+        masks = get_video_masks_by_moving_random_stroke(sample_length, imageWidth=w, imageHeight=h)
       for f, fname in enumerate(fnames[index:min(len(fnames), index+sample_length)]):
         img = ZipReader.imread('../datazip/{}/JPEGImages/{}.zip'.format(DATA_NAME, vname), fname)
         img = cv2.resize(np.array(img), (w,h), cv2.INTER_CUBIC)
         frames.append(Image.fromarray(img))
-        masks.append(get_mask(vname, masks_dict, index+f))
+        if MASK_TYPE != 'random_obj':
+          masks.append(get_mask(vname, masks_dict, index+f))
       if len(frames) < sample_length:
         frames += [frames[-1]] * (sample_length-len(frames))
         masks += [masks[-1]] * (sample_length-len(masks))
