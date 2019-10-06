@@ -119,7 +119,7 @@ def main_worker(gpu, ngpus_per_node, args):
     pred_video = []
     print('{}/{} to {} : {} of {} frames ...'.format(vi, len(video_names), save_path, vname, len(fnames)))
     if MASK_TYPE == 'random_obj':
-      random_objs = get_video_masks_by_moving_random_stroke(sample_length, imageWidth=w, imageHeight=h)
+      random_objs = get_video_masks_by_moving_random_stroke(len(fnames), imageWidth=w, imageHeight=h)
     while index < len(fnames):
       # preprocess data
       frames = []
