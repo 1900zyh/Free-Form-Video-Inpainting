@@ -4,4 +4,5 @@
 *.pth
 *.jpg
 *.avi
+*.tar
 __pycache__

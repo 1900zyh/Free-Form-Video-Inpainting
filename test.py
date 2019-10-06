@@ -90,7 +90,7 @@ def main_worker(gpu, ngpus_per_node, args):
   set_seed(2020)
 
   # Model and version
-  config = torch.load(args.resume)['config']
+  config = torch.load(args.resume, map_location=lambda storage, loc: set_device(storage))['config']
   model = VideoInpaintingModel(**config['arch']['args'])
   model = set_device(model)
   state_dict = torch.load(args.resume, map_location=lambda storage, loc: set_device(storage))['state_dict']
