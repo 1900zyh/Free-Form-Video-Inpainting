@@ -118,18 +118,20 @@ def main_worker(gpu, ngpus_per_node, args):
     comp_video = []
     pred_video = []
     print('{}/{} to {} : {} of {} frames ...'.format(vi, len(video_names), save_path, vname, len(fnames)))
+    if MASK_TYPE == 'random_obj':
+      random_objs = get_video_masks_by_moving_random_stroke(sample_length, imageWidth=w, imageHeight=h)
     while index < len(fnames):
       # preprocess data
       frames = []
       masks = []
-      if MASK_TYPE == 'random_obj':
-        masks = get_video_masks_by_moving_random_stroke(sample_length, imageWidth=w, imageHeight=h)
       for f, fname in enumerate(fnames[index:min(len(fnames), index+sample_length)]):
         img = ZipReader.imread('../datazip/{}/JPEGImages/{}.zip'.format(DATA_NAME, vname), fname)
         img = cv2.resize(np.array(img), (w,h), cv2.INTER_CUBIC)
         frames.append(Image.fromarray(img))
         if MASK_TYPE != 'random_obj':
           masks.append(get_mask(vname, masks_dict, index+f))
+        else:
+          masks.append(random_objs[index+f])
       if len(frames) < sample_length:
         frames += [frames[-1]] * (sample_length-len(frames))
         masks += [masks[-1]] * (sample_length-len(masks))
