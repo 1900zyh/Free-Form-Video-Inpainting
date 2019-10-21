@@ -84,7 +84,7 @@ def get_mask(vname, video_dict, mask_dict, fnames, f):
           '{}.png'.format(mname.split('.jpg')[0])).resize((w, h))
     m = np.array(m)
     m = np.array(m>0).astype(np.uint8)
-    return m 
+    return Image.fromarray(m*255)
   else:
     raise NotImplementedError(f"Mask type {MASK_TYPE} not exists")
 
