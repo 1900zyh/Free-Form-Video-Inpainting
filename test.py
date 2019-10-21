@@ -65,7 +65,7 @@ def get_clear_state_dict(old_state_dict):
   return new_state_dict
 
 
-def get_mask(vname, mask_dict, f):
+def get_mask(vname, video_dict, mask_dict, fnames, f):
   if MASK_TYPE == 'fixed':
     m = np.zeros((h,w), np.uint8)
     m[h//2-h//8:h//2+h//8, w//2-w//8:w//2+w//8] = 255
@@ -78,6 +78,13 @@ def get_mask(vname, mask_dict, f):
     m = cv2.resize(m, (w,h), cv2.INTER_NEAREST)
     m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_CROSS,(3,3)), iterations=4)
     return Image.fromarray(m*255)
+  elif MASK_TYPE == 'random_obj':
+    mname = video_dict[vname][f]
+    m = ZipReader.imread('../datazip/random_masks/{}/{}.zip'.format(DATA_NAME, vname),\
+          '{}.png'.format(mname.split('.jpg')[0])).resize((w, h))
+    m = np.array(m)
+    m = np.array(m>0).astype(np.uint8)
+    return m 
   else:
     raise NotImplementedError(f"Mask type {MASK_TYPE} not exists")
 
@@ -118,8 +125,6 @@ def main_worker(gpu, ngpus_per_node, args):
     comp_video = []
     pred_video = []
     print('{}/{} to {} : {} of {} frames ...'.format(vi, len(video_names), save_path, vname, len(fnames)))
-    if MASK_TYPE == 'random_obj':
-      random_objs = get_video_masks_by_moving_random_stroke(len(fnames), imageWidth=w, imageHeight=h)
     while index < len(fnames):
       # preprocess data
       frames = []
@@ -128,10 +133,7 @@ def main_worker(gpu, ngpus_per_node, args):
         img = ZipReader.imread('../datazip/{}/JPEGImages/{}.zip'.format(DATA_NAME, vname), fname)
         img = cv2.resize(np.array(img), (w,h), cv2.INTER_CUBIC)
         frames.append(Image.fromarray(img))
-        if MASK_TYPE != 'random_obj':
-          masks.append(get_mask(vname, masks_dict, index+f))
-        else:
-          masks.append(random_objs[index+f])
+        masks.append(get_mask(vname, videos_dict, masks_dict, fnames, index+f))
       if len(frames) < sample_length:
         frames += [frames[-1]] * (sample_length-len(frames))
         masks += [masks[-1]] * (sample_length-len(masks))
