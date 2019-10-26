@@ -80,8 +80,8 @@ def get_mask(vname, video_dict, mask_dict, fnames, f):
     return Image.fromarray(m*255)
   elif MASK_TYPE == 'random_obj':
     mname = video_dict[vname][f]
-    m = ZipReader.imread('../datazip/random_masks/{}/{}.zip'.format(DATA_NAME, vname),\
-          '{}.png'.format(mname.split('.jpg')[0])).resize((w, h))
+    m = ZipReader.imread('../datazip/random_masks/{}.zip'.format(DATA_NAME),\
+          '{}.png'.format(vname)).resize((w, h))
     m = np.array(m)
     m = np.array(m>0).astype(np.uint8)
     return Image.fromarray(m*255)
