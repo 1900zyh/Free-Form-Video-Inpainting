@@ -47,7 +47,7 @@ MASK_TYPE = args.m
 
 w,h = 432, 240
 sample_length = 15
-default_fps = 16
+default_fps = 15
 ngpus = torch.cuda.device_count()
 _to_tensors = transforms.Compose([
   Stack(),
