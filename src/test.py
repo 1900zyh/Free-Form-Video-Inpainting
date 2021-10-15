@@ -63,7 +63,6 @@ def main_worker():
     config = data['config']['arch']['args']
     model = VideoInpaintingModel(**config)
     model.load_state_dict(data['state_dict'])
-    model = torch.nn.DataParallel(model)
     model = model.eval().cuda()
     
     
@@ -84,9 +83,9 @@ def main_worker():
         # guidances: [B, L, C=1, H, W]
         for i in range(0, frame, per_frame): 
             with torch.no_grad():
-                outputs = model(
-                    inputs[:,i:min(i+per_frame, frame)], 
-                    masks[:,i:min(i+per_frame, frame)])['outputs']
+                i_ = inputs[:,i:min(i+per_frame, frame)].cuda()
+                m_ = masks[:,i:min(i+per_frame, frame)].cuda() 
+                outputs = model(i_, m_)['outputs']
                 outputs = outputs.clamp(0, 1)
     
             for j in range(outputs.size(1)): 
