@@ -8,7 +8,8 @@ import numpy as np
 import torch
 from scipy import linalg
 from libs.video_quality import ssim, psnr
-from libs import PerceptualSimilarity
+# from libs import PerceptualSimilarity
+from lpips import LPIPS as PerceptualSimilarity
 
 from utils.logging_config import logger
 from utils.readers import FrameReader, MaskReader
